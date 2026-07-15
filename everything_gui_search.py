@@ -107,6 +107,8 @@ COLOR_DXF = "#E5E7EB"
 COLOR_PDF = "#FECACA"
 COLOR_EXCEL = "#BBF7D0"
 COLOR_OTHER = "#FFFFFF"
+COLOR_DUP = "#E9D5FF"  # 重複フィルタ
+COLOR_OLD = "#FED7AA"  # 旧・OLD フィルタ
 
 TYPE_SORT_ORDER = {
     "folder": 0,
@@ -134,6 +136,14 @@ TYPE_FILTER_ITEMS = (
     ("pdf", "PDF", COLOR_PDF),
     ("excel", "Excel", COLOR_EXCEL),
     ("other", "その他", COLOR_OTHER),
+)
+
+# 追加フィルタ（タグ, ラベル, 色）— 種類の後ろに並べる
+# 重複: 明るい=同名も全部 / 暗い=最新1件のみ
+# 旧・OLD: 明るい=表示 / 暗い=非表示
+EXTRA_FILTER_ITEMS = (
+    ("dup", "重複", COLOR_DUP),
+    ("old", "旧・OLD", COLOR_OLD),
 )
 
 # 非表示（オフ）時のチップ色
@@ -275,6 +285,98 @@ def to_flexible_regex(text: str) -> str:
     return "".join(parts)
 
 
+def normalize_name_for_dedup(filename: str) -> str:
+    """
+    重複判定用キー。
+    ファイル名の - / _ / 半角・全角スペースを同一視し、拡張子は大小無視。
+    """
+    name = filename or ""
+    stem = Path(name).stem
+    ext = Path(name).suffix.lower()
+    parts = []
+    for ch in stem:
+        if ch in _FLEX_SEPARATORS:
+            parts.append("\x00")
+        else:
+            parts.append(ch.lower())
+    # 連続する区切りは1つにまとめる
+    norm_stem = re.sub(r"\x00+", "\x00", "".join(parts)).strip("\x00")
+    return f"{norm_stem}{ext}"
+
+
+def path_depth(fullpath: str) -> int:
+    """パスの深さ（区切りの数）。浅いほど小さい。"""
+    p = (fullpath or "").replace("/", "\\").strip("\\")
+    if not p:
+        return 0
+    return p.count("\\")
+
+
+def is_old_related(row: dict) -> bool:
+    """
+    「旧」または「old」（大小無視）をパス・フォルダ名・ファイル名のいずれかに含むか。
+    """
+    full = row.get("fullpath") or ""
+    path = row.get("path") or ""
+    name = row.get("name") or ""
+    text = f"{full}\n{path}\n{name}"
+    if "旧" in text:
+        return True
+    if "old" in text.lower():
+        return True
+    return False
+
+
+def pick_better_duplicate(a: dict, b: dict) -> dict:
+    """
+    同名ファイルのうち残す方を選ぶ。
+    1. 更新日時が新しい
+    2. パスが浅い
+    3. フルパスが短い
+    4. フルパスの辞書順が先
+    """
+    da = a.get("date_raw", -1.0)
+    db = b.get("date_raw", -1.0)
+    if da != db:
+        return a if da > db else b
+
+    pa = a.get("path_depth", 10**9)
+    pb = b.get("path_depth", 10**9)
+    if pa != pb:
+        return a if pa < pb else b
+
+    fa = a.get("fullpath") or ""
+    fb = b.get("fullpath") or ""
+    if len(fa) != len(fb):
+        return a if len(fa) < len(fb) else b
+    return a if fa <= fb else b
+
+
+def dedupe_files_keep_newest(rows: list) -> list:
+    """
+    ファイルのみ、あいまい正規化した name+ext で重複排除。
+    フォルダはそのまま残す。
+    """
+    folders = []
+    files = []
+    for r in rows:
+        if (r.get("type") or "").lower() == "folder":
+            folders.append(r)
+        else:
+            files.append(r)
+
+    best: dict[str, dict] = {}
+    for r in files:
+        key = r.get("dedup_key") or normalize_name_for_dedup(r.get("name") or "")
+        if key not in best:
+            best[key] = r
+        else:
+            best[key] = pick_better_duplicate(best[key], r)
+
+    # フォルダを先に、ファイルは元の相対順に近いよう fullpath で安定ソートは後段の sort に任せる
+    return folders + list(best.values())
+
+
 # =========================
 # 表示用ヘルパー
 # =========================
@@ -413,6 +515,7 @@ def parse_results(data):
         except (TypeError, ValueError):
             size_num = -1
 
+        is_folder = (item_type or "").lower() == "folder"
         results.append(
             {
                 "fullpath": fullpath,
@@ -427,9 +530,14 @@ def parse_results(data):
                     name.lower(),
                 ),
                 "size_raw": size_num,
-                "size_text": format_size(size_raw) if item_type != "folder" else "",
+                "size_text": format_size(size_raw) if not is_folder else "",
                 "date_raw": date_dt.timestamp() if date_dt else -1.0,
                 "date_text": format_datetime(date_raw),
+                "path_depth": path_depth(fullpath),
+                "dedup_key": "" if is_folder else normalize_name_for_dedup(name),
+                "is_old": is_old_related(
+                    {"fullpath": fullpath, "path": path, "name": name}
+                ),
             }
         )
 
@@ -600,6 +708,13 @@ class EverythingSearchApp:
         # 種類フィルタ（True = 表示）
         self.type_visible = {tag: True for tag, _label, _color in TYPE_FILTER_ITEMS}
         self.type_filter_chips = {}
+        # 追加フィルタ（True=明るい=緩い側）
+        # show_duplicates True: 同名も全部 / False: 最新1件のみ
+        # show_old True: 旧・OLD も表示 / False: 非表示
+        self.show_duplicates = True
+        self.show_old = True
+        self.extra_filter_chips = {}
+        self.filter_stats = {"type": 0, "old": 0, "dup": 0}
         self.folder_history_open = False
 
         self.create_widgets()
@@ -773,7 +888,7 @@ class EverythingSearchApp:
         legend.pack(side="left", fill="x", expand=True)
         tk.Label(
             legend,
-            text="種類フィルタ",
+            text="フィルタ",
             bg=UI["surface"],
             fg=UI["text_muted"],
             font=FONT_SMALL,
@@ -788,6 +903,16 @@ class EverythingSearchApp:
             )
             chip.pack(side="left", padx=(0, 6))
             self.type_filter_chips[tag] = chip
+        for tag, text, color in EXTRA_FILTER_ITEMS:
+            chip = TypeFilterChip(
+                legend,
+                text=text,
+                tag=tag,
+                active_bg=color,
+                command=self.on_extra_filter_toggle,
+            )
+            chip.pack(side="left", padx=(0, 6))
+            self.extra_filter_chips[tag] = chip
 
         actions = tk.Frame(top_footer, bg=UI["surface"])
         actions.pack(side="right")
@@ -1102,7 +1227,8 @@ class EverythingSearchApp:
             "\n"
             "【便利な操作】\n"
             "・列ヘッダをクリック → 並び替え（種類 / 名前 / 場所 / サイズ / 日時）\n"
-            "・下の「種類フィルタ」をクリック → その種類の表示/非表示\n"
+            "・下の「フィルタ」をクリック → 種類・重複・旧/OLD の表示切替\n"
+            "  （重複: 暗い＝同名は最新のみ / 旧・OLD: 暗い＝旧を含むパスを非表示）\n"
             "・対象フォルダ入力欄 → 履歴から過去のフォルダを選択\n"
             "・接続設定タブ → Everything が別 PC のときのホスト/ポート\n"
         )
@@ -1542,15 +1668,56 @@ class EverythingSearchApp:
         else:
             self._update_info_label()
 
+    def on_extra_filter_toggle(self, tag: str, enabled: bool):
+        """
+        追加フィルタ。
+        重複: 明るい=全部表示 / 暗い=最新1件のみ
+        旧・OLD: 明るい=表示 / 暗い=非表示
+        """
+        if tag == "dup":
+            self.show_duplicates = enabled
+        elif tag == "old":
+            self.show_old = enabled
+        if self.all_results:
+            self.apply_sort_and_display()
+        else:
+            self._update_info_label()
+
+    def _apply_filters(self, rows: list) -> list:
+        """
+        適用順: 種類 → 旧・OLD → 重複（同名は最新のみ）
+        filter_stats を更新する。
+        """
+        stats = {"type": 0, "old": 0, "dup": 0}
+
+        after_type = []
+        for r in rows:
+            if self.type_visible.get(r.get("tag", "other"), True):
+                after_type.append(r)
+            else:
+                stats["type"] += 1
+
+        after_old = []
+        for r in after_type:
+            if not self.show_old and r.get("is_old"):
+                stats["old"] += 1
+            else:
+                after_old.append(r)
+
+        if self.show_duplicates:
+            after_dup = after_old
+        else:
+            after_dup = dedupe_files_keep_newest(after_old)
+            stats["dup"] = len(after_old) - len(after_dup)
+
+        self.filter_stats = stats
+        return after_dup
+
     def apply_sort_and_display(self):
         key = self.SORT_KEYS.get(self.sort_column, "fullpath")
         reverse = not self.sort_ascending
 
-        filtered = [
-            r
-            for r in self.all_results
-            if self.type_visible.get(r.get("tag", "other"), True)
-        ]
+        filtered = self._apply_filters(self.all_results)
         sorted_results = sorted(
             filtered,
             key=lambda r: (r.get(key, ""), r.get("fullpath", "")),
@@ -1586,13 +1753,7 @@ class EverythingSearchApp:
         total = self.total_results
         direction = "昇順" if self.sort_ascending else "降順"
         col = self.SORT_LABELS.get(self.sort_column, self.sort_column)
-
-        visible_tags = [t for t, on in self.type_visible.items() if on]
-        hidden_count = sum(
-            1
-            for r in self.all_results
-            if not self.type_visible.get(r.get("tag", "other"), True)
-        )
+        stats = getattr(self, "filter_stats", {"type": 0, "old": 0, "dup": 0})
 
         if total > fetched:
             base = f"{total} 件中 {fetched} 件取得"
@@ -1600,11 +1761,25 @@ class EverythingSearchApp:
             base = f"{total} 件ヒット"
 
         parts = [base, f"{col}{direction}"]
-        if hidden_count:
-            parts.append(f"種類フィルタで {hidden_count} 件非表示")
-        if shown < (fetched - hidden_count) or shown < fetched:
+        if stats.get("type"):
+            parts.append(f"種類で {stats['type']} 件除外")
+        if stats.get("old"):
+            parts.append(f"旧・OLDで {stats['old']} 件除外")
+        if stats.get("dup"):
+            parts.append(f"重複で {stats['dup']} 件除外")
+
+        after_filters = (
+            fetched
+            - stats.get("type", 0)
+            - stats.get("old", 0)
+            - stats.get("dup", 0)
+        )
+        if shown < after_filters:
             parts.append(f"上位 {shown} 件を表示")
-        if not visible_tags:
+        elif shown:
+            parts.append(f"{shown} 件表示")
+
+        if not any(self.type_visible.values()):
             parts.append("すべての種類が非表示")
         self.info_var.set("  ·  ".join(parts))
 
