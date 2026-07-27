@@ -4,5 +4,7 @@
   "user": "",
   "password": "",
   "search_folder": "",
-  "folder_history": []
+  "folder_history": [],
+  "filters": [],
+  "chip_state": {}
 }

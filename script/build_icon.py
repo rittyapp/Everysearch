@@ -4,8 +4,10 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-OUT = Path(__file__).resolve().parent
+# 出力先はリポジトリ直下の assets/（このスクリプトは script/ にある）
+OUT = Path(__file__).resolve().parent.parent / "assets"
 ICON_DIR = OUT / "icons"
+OUT.mkdir(exist_ok=True)
 ICON_DIR.mkdir(exist_ok=True)
 
 # Windows で使う小〜最大（256）の代表サイズ
