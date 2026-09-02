@@ -49,17 +49,40 @@ def version_is_newer(remote: str, local: str) -> bool:
     return _parse_version(remote) > _parse_version(local)
 
 
-def fetch_latest_release(repo: str = GITHUB_REPO, timeout: float = 20.0) -> ReleaseInfo:
+def _github_headers(token: str | None = None) -> dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": f"Everysearch-Updater/{APP_VERSION}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    tok = (token or "").strip() or os.environ.get("GITHUB_TOKEN") or os.environ.get(
+        "GH_TOKEN"
+    ) or ""
+    if tok:
+        headers["Authorization"] = f"Bearer {tok}"
+    return headers
+
+
+def fetch_latest_release(
+    repo: str = GITHUB_REPO,
+    timeout: float = 20.0,
+    token: str | None = None,
+) -> ReleaseInfo:
+    """
+    最新 Release を取得。私有リポジトリは token（または環境変数 GITHUB_TOKEN / GH_TOKEN）が必要。
+    """
     url = f"https://api.github.com/repos/{repo}/releases/latest"
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": f"Everysearch-Updater/{APP_VERSION}",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    req = urllib.request.Request(url, headers=_github_headers(token))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise RuntimeError(
+                "Release が見つかりません（リポジトリが私有の場合は "
+                "接続設定の GitHub トークン、または環境変数 GITHUB_TOKEN が必要です）。"
+            ) from e
+        raise
 
     tag = str(data.get("tag_name") or "")
     version = tag.lstrip("vV")
@@ -104,12 +127,14 @@ def fetch_latest_release(repo: str = GITHUB_REPO, timeout: float = 20.0) -> Rele
     )
 
 
-def download_file(url: str, dest: Path, timeout: float = 120.0) -> None:
+def download_file(
+    url: str,
+    dest: Path,
+    timeout: float = 120.0,
+    token: str | None = None,
+) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": f"Everysearch-Updater/{APP_VERSION}"},
-    )
+    req = urllib.request.Request(url, headers=_github_headers(token))
     with urllib.request.urlopen(req, timeout=timeout) as resp, open(dest, "wb") as out:
         shutil.copyfileobj(resp, out)
 
@@ -184,7 +209,10 @@ def write_update_runner(
     return runner
 
 
-def apply_update_and_restart(release: ReleaseInfo) -> str:
+def apply_update_and_restart(
+    release: ReleaseInfo,
+    token: str | None = None,
+) -> str:
     """
     DL→staging→runner 起動→呼び出し元は終了すること。
     戻り値: ユーザー向けメッセージ（成功準備完了）
@@ -201,8 +229,8 @@ def apply_update_and_restart(release: ReleaseInfo) -> str:
             pass
 
     tmp = staging / release.asset_name
-    download_file(release.asset_url, tmp)
-    exe = prepare_staging_exe(tmp, staging)
+    download_file(release.asset_url, tmp, token=token)
+    prepare_staging_exe(tmp, staging)
     write_version_file(staging / "version.txt", release.version)
 
     # Ensure current exists (first update from odd layout)

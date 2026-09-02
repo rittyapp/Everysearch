@@ -83,6 +83,8 @@ DEFAULT_SETTINGS = {
     "port": 8888,
     "user": "",
     "password": "",
+    # 私有 GitHub の Releases 取得用（DPAPI 暗号化保存）
+    "github_token": "",
     # 初期は空（全体検索）。特定フォルダはユーザーが指定／履歴から選択
     "search_folder": "",
     "folder_history": [],
@@ -535,8 +537,9 @@ def load_settings() -> dict:
                         data[k] = loaded[k]
         except (OSError, json.JSONDecodeError, TypeError):
             pass
-    # パスワードは暗号化して保存してある（旧バージョンの平文もそのまま読める）
+    # パスワード／GitHub トークンは暗号化して保存（旧平文も読める）
     data["password"] = decrypt_secret(str(data.get("password") or ""))
+    data["github_token"] = decrypt_secret(str(data.get("github_token") or ""))
     # 既定フォルダに引用符が無い場合は付ける
     data["search_folder"] = quote_folder_path(data.get("search_folder", "") or "")
     data["folder_history"] = normalize_folder_history(data.get("folder_history", []))
@@ -562,6 +565,7 @@ def save_settings(settings: dict) -> None:
         "port": int(settings.get("port", 8888)),
         "user": str(settings.get("user", "")),
         "password": encrypt_secret(str(settings.get("password", ""))),
+        "github_token": encrypt_secret(str(settings.get("github_token", ""))),
         "search_folder": quote_folder_path(settings.get("search_folder", "")),
         "folder_history": normalize_folder_history(settings.get("folder_history", [])),
         "filters": filters,
@@ -1602,12 +1606,16 @@ class EverythingSearchApp:
         self.port_var = tk.StringVar(value=str(self.settings.get("port", 8888)))
         self.user_var = tk.StringVar(value=str(self.settings.get("user", "")))
         self.password_var = tk.StringVar(value=str(self.settings.get("password", "")))
+        self.github_token_var = tk.StringVar(
+            value=str(self.settings.get("github_token", ""))
+        )
 
         fields = [
             ("ホスト / IP", self.host_var, False),
             ("ポート", self.port_var, False),
             ("ユーザー名（任意）", self.user_var, False),
             ("パスワード（任意）", self.password_var, True),
+            ("GitHubトークン（私有リポ用）", self.github_token_var, True),
         ]
         for i, (label, var, is_password) in enumerate(fields):
             row = tk.Frame(form, bg=UI["surface"])
@@ -1654,7 +1662,9 @@ class EverythingSearchApp:
             "ヒント:\n"
             "・Everything → ツール → オプション → HTTP サーバー を有効にする\n"
             "・他 PC から使う場合は、ファイアウォールでポートを許可する\n"
-            "・設定は settings.json に保存されます"
+            "・GitHub が私有のとき、更新タブ用に fine-grained / classic の read:packages 不要・"
+            "repo 読み取り可能なトークンを入れる（DPAPI で暗号化保存）\n"
+            "・設定は LocalAppData\\Everysearch\\data\\settings.json（setup 後）"
         )
         tk.Label(
             card,
@@ -2410,7 +2420,8 @@ class EverythingSearchApp:
             try:
                 from self_update import fetch_latest_release, version_is_newer
 
-                info = fetch_latest_release()
+                tok = str(self.settings.get("github_token") or "")
+                info = fetch_latest_release(token=tok)
             except Exception as e:
                 err = e
 
@@ -2482,7 +2493,8 @@ class EverythingSearchApp:
             try:
                 from self_update import apply_update_and_restart
 
-                msg = apply_update_and_restart(rel)
+                tok = str(self.settings.get("github_token") or "")
+                msg = apply_update_and_restart(rel, token=tok)
             except Exception as e:
                 err = e
 
@@ -2841,6 +2853,7 @@ class EverythingSearchApp:
         self.settings["port"] = port
         self.settings["user"] = self.user_var.get()
         self.settings["password"] = self.password_var.get()
+        self.settings["github_token"] = self.github_token_var.get()
         self.settings["search_folder"] = quote_folder_path(self.folder_var.get())
         # 現在のフォルダも履歴へ
         if self.settings["search_folder"]:
