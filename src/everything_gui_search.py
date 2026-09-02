@@ -44,7 +44,6 @@ from tkinter import filedialog, messagebox, ttk  # noqa: E402
 # =========================
 from app_paths import (  # noqa: E402
     APP_VERSION,
-    GITHUB_REPO,
     detect_install_root,
     ensure_install_dirs,
     local_app_install_root,
