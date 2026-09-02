@@ -40,29 +40,40 @@ import tkinter as tk  # noqa: E402
 from tkinter import filedialog, messagebox, ttk  # noqa: E402
 
 # =========================
-# 設定
+# 設定・パス
 # =========================
+from app_paths import (  # noqa: E402
+    APP_VERSION,
+    GITHUB_REPO,
+    detect_install_root,
+    ensure_install_dirs,
+    local_app_install_root,
+    read_version,
+    resource_dir as _resource_dir_impl,
+    runtime_dir as _runtime_dir_impl,
+    settings_path as _settings_path_impl,
+    write_version_file,
+)
+
+
 def _runtime_dir() -> Path:
-    """書き込み可能なアプリ配置フォルダ（EXE の隣 / スクリプトの隣）。"""
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent
+    return _runtime_dir_impl()
 
 
 def _resource_dir() -> Path:
-    """同梱リソース（ICO 等）。onefile EXE 時は展開先 _MEIPASS。"""
-    if getattr(sys, "frozen", False):
-        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
-    return Path(__file__).resolve().parent
+    return _resource_dir_impl()
 
 
 APP_DIR = _runtime_dir()
 RESOURCE_DIR = _resource_dir()
-SETTINGS_PATH = APP_DIR / "settings.json"
+SETTINGS_PATH = _settings_path_impl()
 ICON_PATH = RESOURCE_DIR / "everysearch.ico"
 if not ICON_PATH.is_file():
-    # 開発時（src/ から実行）・同梱漏れ時の候補
-    for _alt in (APP_DIR / "everysearch.ico", APP_DIR.parent / "assets" / "everysearch.ico"):
+    for _alt in (
+        APP_DIR / "everysearch.ico",
+        APP_DIR.parent / "assets" / "everysearch.ico",
+        Path(__file__).resolve().parents[1] / "assets" / "everysearch.ico",
+    ):
         if _alt.is_file():
             ICON_PATH = _alt
             break
@@ -488,7 +499,29 @@ def normalize_chip_state(raw, filters: list[dict]) -> dict:
     return state
 
 
+def _migrate_settings_to_data_dir() -> None:
+    """旧 EXE 隣の settings.json を LocalAppData\\Everysearch\\data へ一度コピー。"""
+    try:
+        if SETTINGS_PATH.is_file():
+            return
+        inst = detect_install_root() or local_app_install_root()
+        if SETTINGS_PATH.parent != (inst / "data"):
+            return
+        for legacy in (
+            APP_DIR / "settings.json",
+            local_app_install_root() / "current" / "settings.json",
+            Path(__file__).resolve().parent / "settings.json",
+        ):
+            if legacy.is_file() and legacy.resolve() != SETTINGS_PATH.resolve():
+                SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+                SETTINGS_PATH.write_bytes(legacy.read_bytes())
+                return
+    except OSError:
+        pass
+
+
 def load_settings() -> dict:
+    _migrate_settings_to_data_dir()
     data = dict(DEFAULT_SETTINGS)
     data["folder_history"] = list(DEFAULT_SETTINGS["folder_history"])
     data["filters"] = []
@@ -1059,6 +1092,14 @@ class ModernButton(tk.Label):
             "hover": "#E0E7FF",
         }
 
+    def set_enabled(self, enabled: bool):
+        self._enabled = bool(enabled)
+        self.configure(
+            bg=self._colors["bg"] if self._enabled else UI["border"],
+            fg=self._colors["fg"] if self._enabled else UI["text_muted"],
+            cursor="hand2" if self._enabled else "arrow",
+        )
+
     def _on_enter(self, _e=None):
         if self._enabled:
             self.configure(bg=self._colors["hover"])
@@ -1100,7 +1141,7 @@ class EverythingSearchApp:
 
     def __init__(self, root):
         self.root = root
-        self.root.title("Everysearch")
+        self.root.title(f"Everysearch  {read_version()}")
         self.root.geometry("1240x780")
         # 下部ボタン＋検索欄が隠れない程度の最小サイズ
         self.root.minsize(960, 520)
@@ -1282,14 +1323,17 @@ class EverythingSearchApp:
         self.settings_tab = tk.Frame(self.notebook, bg=UI["bg"])
         self.filter_settings_tab = tk.Frame(self.notebook, bg=UI["bg"])
         self.help_tab = tk.Frame(self.notebook, bg=UI["bg"])
+        self.update_tab = tk.Frame(self.notebook, bg=UI["bg"])
         self.notebook.add(self.search_tab, text="  検索  ")
         self.notebook.add(self.settings_tab, text="  接続設定  ")
         self.notebook.add(self.filter_settings_tab, text="  フィルタ設定  ")
+        self.notebook.add(self.update_tab, text="  更新  ")
         self.notebook.add(self.help_tab, text="  使い方  ")
 
         self._build_search_tab()
         self._build_settings_tab()
         self._build_filter_settings_tab()
+        self._build_update_tab()
         self._build_help_tab()
 
     def _build_search_tab(self):
@@ -1313,7 +1357,7 @@ class EverythingSearchApp:
 
         legend = tk.Frame(top_footer, bg=UI["surface"])
         legend.pack(side="left", fill="x", expand=True)
-        # 「フィルタ」ラベル自体が全ONボタン
+        # 「フィルタ」ラベル: クリックで全ON ⇔ 全OFF
         self.filter_all_on_btn = tk.Label(
             legend,
             text="フィルタ",
@@ -1325,7 +1369,9 @@ class EverythingSearchApp:
             pady=2,
         )
         self.filter_all_on_btn.pack(side="left", padx=(0, 8))
-        self.filter_all_on_btn.bind("<Button-1>", lambda _e: self.force_all_filters_on())
+        self.filter_all_on_btn.bind(
+            "<Button-1>", lambda _e: self.toggle_all_filters()
+        )
         self.filter_all_on_btn.bind(
             "<Enter>",
             lambda _e: self.filter_all_on_btn.configure(fg=UI["primary_hover"]),
@@ -1639,27 +1685,39 @@ class EverythingSearchApp:
             fg=UI["text_muted"],
             font=FONT_SMALL,
             anchor="w",
+            wraplength=900,
+            justify="left",
         ).pack(fill="x", pady=(0, 10))
 
         body = tk.Frame(card, bg=UI["surface"])
         body.pack(fill="both", expand=True)
+        body.columnconfigure(0, weight=0, minsize=300)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
 
         # 左: 一覧
-        left = tk.Frame(body, bg=UI["surface"], width=280)
-        left.pack(side="left", fill="y", padx=(0, 12))
-        left.pack_propagate(False)
+        left = tk.Frame(body, bg=UI["surface"])
+        left.grid(row=0, column=0, sticky="nsw", padx=(0, 16))
         tk.Label(
             left, text="フィルタ一覧", bg=UI["surface"], fg=UI["text"], font=FONT_UI
         ).pack(anchor="w")
+        list_wrap = tk.Frame(left, bg=UI["surface"])
+        list_wrap.pack(fill="both", expand=True, pady=(4, 6))
         self.filter_listbox = tk.Listbox(
-            left,
+            list_wrap,
             font=FONT_SMALL,
-            height=16,
+            width=36,
+            height=18,
             activestyle="dotbox",
             selectmode="browse",
             exportselection=False,
         )
-        self.filter_listbox.pack(fill="both", expand=True, pady=(4, 6))
+        list_scroll = ttk.Scrollbar(
+            list_wrap, orient="vertical", command=self.filter_listbox.yview
+        )
+        self.filter_listbox.configure(yscrollcommand=list_scroll.set)
+        self.filter_listbox.pack(side="left", fill="both", expand=True)
+        list_scroll.pack(side="right", fill="y")
         self.filter_listbox.bind("<<ListboxSelect>>", self._on_filter_list_select)
 
         list_btns = tk.Frame(left, bg=UI["surface"])
@@ -1683,23 +1741,30 @@ class EverythingSearchApp:
             list_btns2, text="削除", command=self._delete_selected_filter, variant="ghost"
         ).pack(side="left")
 
-        # 右: 詳細
-        right = tk.Frame(body, bg=UI["surface"])
-        right.pack(side="left", fill="both", expand=True)
+        # 右: 詳細（grid でラベル列と入力列を分離 — pack だと重なる）
+        right_outer = tk.Frame(body, bg=UI["surface"])
+        right_outer.grid(row=0, column=1, sticky="nsew")
+        right_outer.columnconfigure(0, weight=1)
+        right_outer.rowconfigure(0, weight=1)
 
-        def _row(parent_f, label):
-            fr = tk.Frame(parent_f, bg=UI["surface"])
-            fr.pack(fill="x", pady=(0, 8))
-            tk.Label(
-                fr,
-                text=label,
-                bg=UI["surface"],
-                fg=UI["text_muted"],
-                font=FONT_SMALL,
-                width=14,
-                anchor="w",
-            ).pack(side="left")
-            return fr
+        right_canvas = tk.Canvas(right_outer, bg=UI["surface"], highlightthickness=0)
+        right_scroll = ttk.Scrollbar(
+            right_outer, orient="vertical", command=right_canvas.yview
+        )
+        right_canvas.configure(yscrollcommand=right_scroll.set)
+        right_scroll.grid(row=0, column=1, sticky="ns")
+        right_canvas.grid(row=0, column=0, sticky="nsew")
+
+        right = tk.Frame(right_canvas, bg=UI["surface"])
+        right_window = right_canvas.create_window((0, 0), window=right, anchor="nw")
+
+        def _on_right_configure(_e=None):
+            right_canvas.configure(scrollregion=right_canvas.bbox("all"))
+            # キャンバス幅にフォームを合わせる
+            right_canvas.itemconfigure(right_window, width=max(right_canvas.winfo_width(), 1))
+
+        right.bind("<Configure>", _on_right_configure)
+        right_canvas.bind("<Configure>", _on_right_configure)
 
         self.fe_id_var = tk.StringVar()
         self.fe_kind_var = tk.StringVar()
@@ -1715,54 +1780,113 @@ class EverythingSearchApp:
         self.fe_match_name_var = tk.BooleanVar(value=True)
         self.fe_case_var = tk.BooleanVar(value=True)
 
-        r = _row(right, "ID")
-        tk.Label(
-            r, textvariable=self.fe_id_var, bg=UI["surface"], fg=UI["text"], font=FONT_MONO
-        ).pack(side="left")
-        r = _row(right, "種類")
-        tk.Label(
-            r, textvariable=self.fe_kind_var, bg=UI["surface"], fg=UI["text"], font=FONT_UI
-        ).pack(side="left")
-        r = _row(right, "表示名")
-        ttk.Entry(r, textvariable=self.fe_label_var, style="Settings.TEntry").pack(
-            side="left", fill="x", expand=True
+        form = tk.Frame(right, bg=UI["surface"])
+        form.pack(fill="x", anchor="n")
+        form.columnconfigure(0, minsize=120, weight=0)
+        form.columnconfigure(1, weight=1)
+
+        def _grid_label(row: int, text: str):
+            tk.Label(
+                form,
+                text=text,
+                bg=UI["surface"],
+                fg=UI["text_muted"],
+                font=FONT_SMALL,
+                anchor="w",
+            ).grid(row=row, column=0, sticky="nw", padx=(0, 12), pady=6)
+
+        def _grid_field(row: int, widget, sticky="ew"):
+            widget.grid(row=row, column=1, sticky=sticky, pady=6)
+
+        row = 0
+        _grid_label(row, "ID")
+        _grid_field(
+            row,
+            tk.Label(
+                form,
+                textvariable=self.fe_id_var,
+                bg=UI["surface"],
+                fg=UI["text"],
+                font=FONT_MONO,
+                anchor="w",
+            ),
+            sticky="w",
         )
-        r = _row(right, "色 (#RRGGBB)")
-        ttk.Entry(r, textvariable=self.fe_color_var, style="Settings.TEntry", width=12).pack(
-            side="left"
+        row += 1
+        _grid_label(row, "種類")
+        _grid_field(
+            row,
+            tk.Label(
+                form,
+                textvariable=self.fe_kind_var,
+                bg=UI["surface"],
+                fg=UI["text"],
+                font=FONT_UI,
+                anchor="w",
+            ),
+            sticky="w",
         )
+        row += 1
+        _grid_label(row, "表示名")
+        _grid_field(
+            row, ttk.Entry(form, textvariable=self.fe_label_var, style="Settings.TEntry")
+        )
+        row += 1
+        _grid_label(row, "色 (#RRGGBB)")
+        color_fr = tk.Frame(form, bg=UI["surface"])
+        ttk.Entry(
+            color_fr, textvariable=self.fe_color_var, style="Settings.TEntry", width=14
+        ).pack(side="left")
         self.fe_color_preview = tk.Label(
-            r, text="  ", bg="#E2E8F0", width=4, relief="solid", borderwidth=1
+            color_fr, text="    ", bg="#E2E8F0", width=4, relief="solid", borderwidth=1
         )
         self.fe_color_preview.pack(side="left", padx=(8, 0))
-        r = _row(right, "並び (数)")
-        ttk.Entry(r, textvariable=self.fe_order_var, style="Settings.TEntry", width=8).pack(
-            side="left"
+        _grid_field(row, color_fr, sticky="w")
+        row += 1
+        _grid_label(row, "並び (数)")
+        _grid_field(
+            row,
+            ttk.Entry(
+                form, textvariable=self.fe_order_var, style="Settings.TEntry", width=10
+            ),
+            sticky="w",
         )
-        r = _row(right, "オプション")
+        row += 1
+        _grid_label(row, "オプション")
+        opt_fr = tk.Frame(form, bg=UI["surface"])
         tk.Checkbutton(
-            r,
+            opt_fr,
             text="検索画面にチップを表示",
             variable=self.fe_show_chip_var,
             bg=UI["surface"],
             font=FONT_SMALL,
             activebackground=UI["surface"],
-        ).pack(side="left", padx=(0, 12))
+        ).pack(anchor="w")
         tk.Checkbutton(
-            r,
+            opt_fr,
             text="初期は明るい(表示側)",
             variable=self.fe_default_on_var,
             bg=UI["surface"],
             font=FONT_SMALL,
             activebackground=UI["surface"],
-        ).pack(side="left")
+        ).pack(anchor="w")
+        _grid_field(row, opt_fr, sticky="w")
 
+        # 拡張子ブロック
         self.fe_ext_frame = tk.Frame(right, bg=UI["surface"])
-        self.fe_ext_frame.pack(fill="x", pady=(4, 0))
-        r = _row(self.fe_ext_frame, "拡張子")
-        ttk.Entry(r, textvariable=self.fe_ext_var, style="Settings.TEntry").pack(
-            side="left", fill="x", expand=True
-        )
+        self.fe_ext_frame.pack(fill="x", anchor="n", pady=(12, 0))
+        self.fe_ext_frame.columnconfigure(1, weight=1)
+        tk.Label(
+            self.fe_ext_frame,
+            text="拡張子",
+            bg=UI["surface"],
+            fg=UI["text_muted"],
+            font=FONT_SMALL,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="nw", padx=(0, 12), pady=4)
+        ttk.Entry(
+            self.fe_ext_frame, textvariable=self.fe_ext_var, style="Settings.TEntry"
+        ).grid(row=0, column=1, sticky="ew", pady=4)
         tk.Label(
             self.fe_ext_frame,
             text="カンマ区切り 例: .dwg, .dxf",
@@ -1770,14 +1894,23 @@ class EverythingSearchApp:
             fg=UI["text_muted"],
             font=FONT_SMALL,
             anchor="w",
-        ).pack(fill="x")
+        ).grid(row=1, column=1, sticky="ew")
 
+        # キーワードブロック
         self.fe_kw_frame = tk.Frame(right, bg=UI["surface"])
-        self.fe_kw_frame.pack(fill="x", pady=(4, 0))
-        r = _row(self.fe_kw_frame, "キーワード")
-        ttk.Entry(r, textvariable=self.fe_keywords_var, style="Settings.TEntry").pack(
-            side="left", fill="x", expand=True
-        )
+        self.fe_kw_frame.pack(fill="x", anchor="n", pady=(12, 0))
+        self.fe_kw_frame.columnconfigure(1, weight=1)
+        tk.Label(
+            self.fe_kw_frame,
+            text="キーワード",
+            bg=UI["surface"],
+            fg=UI["text_muted"],
+            font=FONT_SMALL,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="nw", padx=(0, 12), pady=4)
+        ttk.Entry(
+            self.fe_kw_frame, textvariable=self.fe_keywords_var, style="Settings.TEntry"
+        ).grid(row=0, column=1, sticky="ew", pady=4)
         tk.Label(
             self.fe_kw_frame,
             text="カンマ区切り。パス等に含まれれば該当（暗いチップで除外）",
@@ -1785,30 +1918,45 @@ class EverythingSearchApp:
             fg=UI["text_muted"],
             font=FONT_SMALL,
             anchor="w",
-        ).pack(fill="x")
-        r = _row(self.fe_kw_frame, "照合先")
+            wraplength=520,
+            justify="left",
+        ).grid(row=1, column=1, sticky="ew")
+        tk.Label(
+            self.fe_kw_frame,
+            text="照合先",
+            bg=UI["surface"],
+            fg=UI["text_muted"],
+            font=FONT_SMALL,
+            anchor="w",
+        ).grid(row=2, column=0, sticky="nw", padx=(0, 12), pady=4)
+        match_fr = tk.Frame(self.fe_kw_frame, bg=UI["surface"])
         for text, var in (
             ("フルパス", self.fe_match_full_var),
             ("場所", self.fe_match_path_var),
             ("名前", self.fe_match_name_var),
         ):
             tk.Checkbutton(
-                r,
+                match_fr,
                 text=text,
                 variable=var,
                 bg=UI["surface"],
                 font=FONT_SMALL,
                 activebackground=UI["surface"],
-            ).pack(side="left", padx=(0, 8))
-        r = _row(self.fe_kw_frame, "")
+            ).pack(side="left", padx=(0, 10))
+        match_fr.grid(row=2, column=1, sticky="w", pady=4)
+        tk.Label(
+            self.fe_kw_frame,
+            text="",
+            bg=UI["surface"],
+        ).grid(row=3, column=0)
         tk.Checkbutton(
-            r,
+            self.fe_kw_frame,
             text="大小文字を無視",
             variable=self.fe_case_var,
             bg=UI["surface"],
             font=FONT_SMALL,
             activebackground=UI["surface"],
-        ).pack(side="left")
+        ).grid(row=3, column=1, sticky="w", pady=4)
 
         self.fe_note_var = tk.StringVar(value="")
         tk.Label(
@@ -1819,7 +1967,8 @@ class EverythingSearchApp:
             font=FONT_SMALL,
             anchor="w",
             justify="left",
-        ).pack(fill="x", pady=(8, 0))
+            wraplength=520,
+        ).pack(fill="x", pady=(12, 0), anchor="n")
 
         bottom = tk.Frame(card, bg=UI["surface"])
         bottom.pack(fill="x", pady=(12, 0))
@@ -1885,14 +2034,14 @@ class EverythingSearchApp:
 
         kind = filt["kind"]
         if kind == "extension":
-            self.fe_ext_frame.pack(fill="x", pady=(4, 0))
+            self.fe_ext_frame.pack(fill="x", anchor="n", pady=(12, 0))
             self.fe_ext_var.set(", ".join(filt.get("extensions") or []))
             self.fe_note_var.set("拡張子グループ。該当しないファイルは「その他」になります。")
         else:
             self.fe_ext_frame.pack_forget()
 
         if kind == "path_keyword":
-            self.fe_kw_frame.pack(fill="x", pady=(4, 0))
+            self.fe_kw_frame.pack(fill="x", anchor="n", pady=(12, 0))
             self.fe_keywords_var.set(", ".join(filt.get("keywords") or []))
             mi = set(filt.get("match_in") or [])
             self.fe_match_full_var.set("fullpath" in mi)
@@ -2122,6 +2271,238 @@ class EverythingSearchApp:
                 r["type_text"] = type_display_label(r["tag"], r.get("name"), self.filter_defs)
             self.apply_sort_and_display()
 
+    def _build_update_tab(self):
+        parent = self.update_tab
+        card = self._card_shell(parent, fill="both", expand=True, padx=8, pady=8)
+
+        tk.Label(
+            card,
+            text="アプリの更新",
+            bg=UI["surface"],
+            fg=UI["text"],
+            font=FONT_UI_BOLD,
+            anchor="w",
+        ).pack(fill="x", pady=(0, 4))
+        tk.Label(
+            card,
+            text=(
+                "GitHub Releases に新しい版があるとここから更新できます。"
+                "先に script\\setup.bat でインストール配置しておくと、"
+                "同じデスクトップショートカットのまま差し替えられます。"
+            ),
+            bg=UI["surface"],
+            fg=UI["text_muted"],
+            font=FONT_SMALL,
+            anchor="w",
+            justify="left",
+            wraplength=900,
+        ).pack(fill="x", pady=(0, 12))
+
+        self.update_local_ver_var = tk.StringVar(value=f"このPCの版: {read_version()}")
+        self.update_remote_ver_var = tk.StringVar(value="GitHub: （未確認）")
+        self.update_status_var = tk.StringVar(value="")
+        self.update_notes_var = tk.StringVar(value="")
+        self._pending_release = None
+
+        tk.Label(
+            card,
+            textvariable=self.update_local_ver_var,
+            bg=UI["surface"],
+            fg=UI["text"],
+            font=FONT_UI,
+            anchor="w",
+        ).pack(fill="x")
+        tk.Label(
+            card,
+            textvariable=self.update_remote_ver_var,
+            bg=UI["surface"],
+            fg=UI["text"],
+            font=FONT_UI,
+            anchor="w",
+        ).pack(fill="x", pady=(4, 0))
+
+        inst = detect_install_root()
+        layout = (
+            f"配置: {inst}"
+            if inst
+            else f"配置: 未setup（推奨 {local_app_install_root()} ）— setup.bat を実行してください"
+        )
+        tk.Label(
+            card,
+            text=layout,
+            bg=UI["surface"],
+            fg=UI["text_muted"],
+            font=FONT_SMALL,
+            anchor="w",
+            wraplength=900,
+            justify="left",
+        ).pack(fill="x", pady=(8, 8))
+
+        btn_row = tk.Frame(card, bg=UI["surface"])
+        btn_row.pack(fill="x", pady=(4, 8))
+        ModernButton(
+            btn_row, text="更新を確認", command=self.check_for_updates, variant="primary"
+        ).pack(side="left", padx=(0, 8))
+        self.update_apply_btn = ModernButton(
+            btn_row, text="アップデート", command=self.apply_pending_update
+        )
+        self.update_apply_btn.pack(side="left", padx=(0, 8))
+        self.update_apply_btn.set_enabled(False)
+        ModernButton(
+            btn_row,
+            text="GitHubを開く",
+            command=lambda: webbrowser.open(
+                f"https://github.com/{GITHUB_REPO}/releases"
+            ),
+            variant="ghost",
+        ).pack(side="left")
+
+        tk.Label(
+            card,
+            textvariable=self.update_status_var,
+            bg=UI["surface"],
+            fg=UI["primary"],
+            font=FONT_SMALL,
+            anchor="w",
+            wraplength=900,
+            justify="left",
+        ).pack(fill="x", pady=(8, 4))
+
+        tk.Label(
+            card,
+            text="リリースノート",
+            bg=UI["surface"],
+            fg=UI["text_muted"],
+            font=FONT_SMALL,
+            anchor="w",
+        ).pack(fill="x", pady=(8, 0))
+        notes_fr = tk.Frame(
+            card,
+            bg=UI["surface_2"],
+            highlightbackground=UI["border"],
+            highlightthickness=1,
+        )
+        notes_fr.pack(fill="both", expand=True, pady=(4, 0))
+        self.update_notes_text = tk.Text(
+            notes_fr,
+            height=12,
+            bg=UI["surface_2"],
+            fg=UI["text"],
+            font=FONT_SMALL,
+            relief="flat",
+            wrap="word",
+            state="disabled",
+        )
+        self.update_notes_text.pack(fill="both", expand=True, padx=8, pady=8)
+
+        # 起動直後に裏で確認（失敗しても黙ってよい）
+        self.root.after(800, lambda: self.check_for_updates(silent=True))
+
+    def check_for_updates(self, silent: bool = False):
+        self.update_local_ver_var.set(f"このPCの版: {read_version()}")
+        self.update_status_var.set("確認中…")
+        self.update_apply_btn.set_enabled(False)
+        self._pending_release = None
+
+        def worker():
+            err = None
+            info = None
+            try:
+                from self_update import fetch_latest_release, version_is_newer
+
+                info = fetch_latest_release()
+            except Exception as e:
+                err = e
+
+            def done():
+                if err:
+                    msg = f"確認できませんでした: {err}"
+                    self.update_remote_ver_var.set("GitHub: （取得失敗）")
+                    self.update_status_var.set(msg if not silent else "")
+                    if not silent:
+                        messagebox.showwarning("更新", msg)
+                    return
+                assert info is not None
+                local = read_version()
+                self.update_remote_ver_var.set(
+                    f"GitHub: {info.version}  （{info.name}）"
+                )
+                self._set_update_notes(info.body or "（ノートなし）")
+                if version_is_newer(info.version, local):
+                    self._pending_release = info
+                    self.update_apply_btn.set_enabled(True)
+                    self.update_status_var.set(
+                        "新しい版があります。「アップデート」を押すとダウンロードします。"
+                    )
+                    if not silent:
+                        if messagebox.askyesno(
+                            "更新版があります",
+                            f"新しい版 {info.version} があります（現在 {local}）。\n\n"
+                            "アップデートしますか？\n"
+                            "（キャンセルで後で「更新」タブから実行できます）",
+                        ):
+                            self.apply_pending_update()
+                else:
+                    self.update_status_var.set("最新版を利用中です。" if not silent else "")
+                    if not silent:
+                        messagebox.showinfo("更新", f"最新版です（{local}）。")
+
+            self.root.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _set_update_notes(self, text: str):
+        self.update_notes_text.configure(state="normal")
+        self.update_notes_text.delete("1.0", "end")
+        self.update_notes_text.insert("1.0", text)
+        self.update_notes_text.configure(state="disabled")
+
+    def apply_pending_update(self):
+        rel = self._pending_release
+        if rel is None:
+            messagebox.showinfo("更新", "先に「更新を確認」を押してください。")
+            return
+        if detect_install_root() is None:
+            if not messagebox.askyesno(
+                "セットアップが必要",
+                "まだ setup 配置になっていないようです。\n\n"
+                f"推奨: script\\setup.bat で\n  {local_app_install_root()}\n"
+                "へ入れてから更新してください。\n\n"
+                "このまま LocalAppData に配置して更新を試みますか？",
+            ):
+                return
+            ensure_install_dirs(local_app_install_root())
+
+        self.update_status_var.set("ダウンロード中…")
+        self.update_apply_btn.set_enabled(False)
+
+        def worker():
+            err = None
+            msg = ""
+            try:
+                from self_update import apply_update_and_restart
+
+                msg = apply_update_and_restart(rel)
+            except Exception as e:
+                err = e
+
+            def done():
+                if err:
+                    self.update_status_var.set(f"失敗: {err}")
+                    self.update_apply_btn.set_enabled(True)
+                    messagebox.showerror("更新", f"アップデートに失敗しました。\n{err}")
+                    return
+                self.update_status_var.set(msg)
+                messagebox.showinfo(
+                    "更新",
+                    msg + "\n\nOK を押すとアプリを終了します（差し替え後に再起動します）。",
+                )
+                self.root.destroy()
+
+            self.root.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _build_help_tab(self):
         parent = self.help_tab
         card = self._card_shell(parent, fill="both", expand=True, padx=8, pady=8)
@@ -2166,7 +2547,7 @@ class EverythingSearchApp:
             "・列ヘッダをクリック → 並び替え（種類 / 名前 / 場所 / サイズ / 日時）\n"
             "・下の各チップをクリック → 種類・重複・条件の表示切替（終了後も保持）\n"
             "  （暗い＝除外 / 重複は最新1件のみ。詳細は「フィルタ設定」タブ）\n"
-            "・「フィルタ」の文字をクリック → すべてのチップを強制全 ON\n"
+            "・「フィルタ」の文字をクリック → すべて ON ⇔ すべて OFF を切替\n"
             "・対象フォルダ入力欄 → 履歴から過去のフォルダを選択\n"
             "・接続設定タブ → Everything が別 PC のときのホスト/ポート\n"
             "・フィルタ設定タブ → 拡張子・色・条件・チップ表示の編集\n"
@@ -2719,11 +3100,38 @@ class EverythingSearchApp:
         self._persist_chip_state()
         self._on_filter_mode_changed()
 
+    def _visible_filter_ids(self) -> list[str]:
+        return [
+            f["id"]
+            for f in self.filter_defs
+            if f.get("show_chip", True)
+        ]
+
+    def _all_visible_filters_on(self) -> bool:
+        ids = self._visible_filter_ids()
+        if not ids:
+            return True
+        return all(self.chip_state.get(fid, True) for fid in ids)
+
+    def toggle_all_filters(self):
+        """「フィルタ」ラベル押下: すべて ON なら全 OFF、それ以外は全 ON。"""
+        turn_on = not self._all_visible_filters_on()
+        for fid in self._visible_filter_ids():
+            self.chip_state[fid] = turn_on
+        for fid, chip in self.filter_chips.items():
+            chip.set_enabled(turn_on)
+            self.chip_state[fid] = turn_on
+        self._persist_chip_state()
+        if turn_on:
+            self.info_var.set("フィルタをすべて ON（表示側）にしました")
+        else:
+            self.info_var.set("フィルタをすべて OFF（非表示側）にしました")
+        self._on_filter_mode_changed()
+
     def force_all_filters_on(self):
-        """「フィルタ」ラベル押下: 表示中チップをすべて明るい（表示側）にする。"""
-        for f in self.filter_defs:
-            if f.get("show_chip", True):
-                self.chip_state[f["id"]] = True
+        """互換: 表示中チップをすべて ON にする。"""
+        for fid in self._visible_filter_ids():
+            self.chip_state[fid] = True
         for fid, chip in self.filter_chips.items():
             chip.set_enabled(True)
             self.chip_state[fid] = True

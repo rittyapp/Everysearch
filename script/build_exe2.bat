@@ -4,46 +4,52 @@ setlocal
 cd /d "%~dp0.."
 set "ROOT=%CD%"
 
-echo === Everysearch EXE ƒrƒ‹ƒh ===
-echo ì‹ÆƒtƒHƒ‹ƒ_: %ROOT%
+echo === Everysearch EXE ï¿½rï¿½ï¿½ï¿½h ===
+echo ï¿½ï¿½Æƒtï¿½Hï¿½ï¿½ï¿½_: %ROOT%
 echo.
 
-REM ‹N“®’†‚Ì EXE ‚ª‚ ‚é‚Æã‘‚«‚Å‚«‚È‚¢
+REM ï¿½Nï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ EXE ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Æã‘ï¿½ï¿½ï¿½Å‚ï¿½ï¿½È‚ï¿½
 taskkill /F /IM Everysearch.exe >nul 2>&1
 
-echo [1/3] ƒAƒCƒRƒ“¶¬...
+echo [1/3] ï¿½Aï¿½Cï¿½Rï¿½ï¿½ï¿½ï¿½ï¿½ï¿½...
 py -3 "%ROOT%\script\build_icon.py"
 if errorlevel 1 (
-  echo ERROR: build_icon.py ‚É¸”s‚µ‚Ü‚µ‚½
+  echo ERROR: build_icon.py ï¿½Éï¿½ï¿½sï¿½ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½
   goto :error
 )
 if not exist "%ROOT%\assets\everysearch.ico" (
-  echo ERROR: assets\everysearch.ico ‚ª‚ ‚è‚Ü‚¹‚ñ
+  echo ERROR: assets\everysearch.ico ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½
   goto :error
 )
 
-echo [2/3] PyInstaller ‚Å EXE ì¬...
-REM --specpath ‚ğg‚¤‚½‚ßA--icon / --add-data ‚Íâ‘ÎƒpƒX‚Å“n‚·
-py -3 -m PyInstaller --noconfirm --clean --windowed --onefile --name Everysearch --icon "%ROOT%\assets\everysearch.ico" --add-data "%ROOT%\assets\everysearch.ico;." --hidden-import win32timezone --distpath "%ROOT%\dist" --workpath "%ROOT%\build" --specpath "%ROOT%\build" "%ROOT%\src\everything_gui_search.py"
+echo [2/3] PyInstaller ï¿½ï¿½ EXE ï¿½ì¬...
+REM --specpath ï¿½ï¿½ï¿½gï¿½ï¿½ï¿½ï¿½ï¿½ßA--icon / --add-data ï¿½Íï¿½Îƒpï¿½Xï¿½Å“nï¿½ï¿½
+py -3 -m PyInstaller --noconfirm --clean --windowed --onefile --name Everysearch --icon "%ROOT%\assets\everysearch.ico" --add-data "%ROOT%\assets\everysearch.ico;." --add-data "%ROOT%\version.txt;." --hidden-import win32timezone --hidden-import app_paths --hidden-import self_update --distpath "%ROOT%\dist" --workpath "%ROOT%\build" --specpath "%ROOT%\build" "%ROOT%\src\everything_gui_search.py"
 if errorlevel 1 (
-  echo ERROR: PyInstaller ‚É¸”s‚µ‚Ü‚µ‚½
+  echo ERROR: PyInstaller ï¿½Éï¿½ï¿½sï¿½ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½
   echo   py -3 -m pip install pyinstaller pillow pywin32
-  echo   ‚ğ‚µ‚Ä‚­‚¾‚³‚¢BEXE ‚ªÀs’†‚Å‚È‚¢‚©‚àŠm”F‚µ‚Ä‚­‚¾‚³‚¢B
+  echo   ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½BEXE ï¿½ï¿½ï¿½ï¿½ï¿½sï¿½ï¿½ï¿½Å‚È‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½mï¿½Fï¿½ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½B
   goto :error
 )
 
 if not exist "%ROOT%\dist\Everysearch.exe" (
-  echo ERROR: dist\Everysearch.exe ‚ªŒ©‚Â‚©‚è‚Ü‚¹‚ñ‚Å‚µ‚½
+  echo ERROR: dist\Everysearch.exe ï¿½ï¿½ï¿½ï¿½ï¿½Â‚ï¿½ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½Å‚ï¿½ï¿½ï¿½
   goto :error
 )
 
-echo [3/3] README ‚ğ dist ‚ÖƒRƒs[...
+echo [3/3] README / version.txt to dist...
 copy /Y "%ROOT%\README.MD" "%ROOT%\dist\README.MD" >nul
+if exist "%ROOT%\version.txt" (
+  copy /Y "%ROOT%\version.txt" "%ROOT%\dist\version.txt" >nul
+) else (
+  echo 1.2.0> "%ROOT%\dist\version.txt"
+)
 
 echo.
 echo ==============================
-echo  Š®—¹‚µ‚Ü‚µ‚½
+echo  BUILD OK
 echo  %ROOT%\dist\Everysearch.exe
+echo  Next: script\setup.bat
 echo ==============================
 echo.
 pause
@@ -51,6 +57,6 @@ exit /b 0
 
 :error
 echo.
-echo ƒrƒ‹ƒh‚É¸”s‚µ‚Ü‚µ‚½B
+echo ï¿½rï¿½ï¿½ï¿½hï¿½Éï¿½ï¿½sï¿½ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½ï¿½B
 pause
 exit /b 1
