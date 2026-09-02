@@ -32,15 +32,20 @@ Everything 本体: https://www.voidtools.com/
 
 ## 起動・セットアップ（どの Windows でも）
 
-1. **ビルド**（開発 PC）: `script\build_exe2.bat`
-2. **インストール**: `script\setup.bat`  
-   → `%LocalAppData%\Everysearch\current\Everysearch.exe`  
-   → デスクトップ／スタートにショートカット
-3. **更新**: アプリの **「更新」タブ** で GitHub Releases を確認 → アップデート／キャンセル  
-   （同じショートカットのまま最新版に差し替え。失敗時は `previous\` に直前版）
+### 利用者向け
 
-- **開発用**: `script\起動.bat`、または `py src\everything_gui_search.py`
-- Release には `Everysearch.exe`（またはそれを含む zip）を添付してください: https://github.com/rittyapp/Everysearch/releases
+1. 配布された **セットアップ** を一度実行（デスクトップにショートカットが付く）
+2. ショートカットから起動
+3. 新しい版があるときはアプリ内 **「更新」タブ** →「更新を確認」→「ダウンロードして更新」
+
+利用者は GitHub やトークンを意識する必要はありません。
+
+### 開発者向け
+
+1. **ビルド**: `script\build_exe2.bat`
+2. **セットアップ試験**: `script\setup.bat` → `%LocalAppData%\Everysearch\`
+3. **配布**: 公開 Release に `Everysearch.exe` を添付（更新タブがここを見に行く。UI には出さない）
+4. **開発起動**: `script\起動.bat` または `py src\everything_gui_search.py`
 
 ## かんたんな使い方
 

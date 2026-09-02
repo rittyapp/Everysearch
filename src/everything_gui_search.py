@@ -1606,17 +1606,12 @@ class EverythingSearchApp:
         self.port_var = tk.StringVar(value=str(self.settings.get("port", 8888)))
         self.user_var = tk.StringVar(value=str(self.settings.get("user", "")))
         self.password_var = tk.StringVar(value=str(self.settings.get("password", "")))
-        self.github_token_var = tk.StringVar(
-            value=str(self.settings.get("github_token", ""))
-        )
 
         fields = [
             ("ホスト / IP", self.host_var, False),
             ("ポート", self.port_var, False),
             ("ユーザー名（任意）", self.user_var, False),
             ("パスワード（任意）", self.password_var, True),
-            # 通常は不要（公開 Release）。社内ミラー等が私有のときだけ
-            ("GitHubトークン（通常は空で可）", self.github_token_var, True),
         ]
         for i, (label, var, is_password) in enumerate(fields):
             row = tk.Frame(form, bg=UI["surface"])
@@ -1663,7 +1658,7 @@ class EverythingSearchApp:
             "ヒント:\n"
             "・Everything → ツール → オプション → HTTP サーバー を有効にする\n"
             "・他 PC から使う場合は、ファイアウォールでポートを許可する\n"
-            "・アプリの更新は「更新」タブから（公開の GitHub Release を参照。通常トークン不要）\n"
+            "・アプリの更新は「更新」タブから行えます\n"
             "・接続設定はこのPCだけに保存されます（他の人の設定とは別）"
         )
         tk.Label(
@@ -2296,8 +2291,8 @@ class EverythingSearchApp:
         tk.Label(
             card,
             text=(
-                "新しい版が公開されると、ここから更新できます。"
-                "アップデート後もデスクトップの同じショートカットで起動できます。"
+                "新しい版があるか確認し、このPCへ取り込めます。"
+                "更新後も、いつも使っているショートカットから起動できます。"
             ),
             bg=UI["surface"],
             fg=UI["text_muted"],
@@ -2308,9 +2303,8 @@ class EverythingSearchApp:
         ).pack(fill="x", pady=(0, 12))
 
         self.update_local_ver_var = tk.StringVar(value=f"このPCの版: {read_version()}")
-        self.update_remote_ver_var = tk.StringVar(value="公開版: （未確認）")
+        self.update_remote_ver_var = tk.StringVar(value="ダウンロード可能な版: （未確認）")
         self.update_status_var = tk.StringVar(value="")
-        self.update_notes_var = tk.StringVar(value="")
         self._pending_release = None
 
         tk.Label(
@@ -2332,12 +2326,11 @@ class EverythingSearchApp:
 
         inst = detect_install_root()
         if inst is not None:
-            # フルパスは開発者向けに見せすぎない（各ユーザーの AppData になるのは正常）
-            layout = "インストール状態: このPC用にセットアップ済み"
+            layout = "このPC: セットアップ済み（自動更新が使えます）"
         else:
             layout = (
-                "インストール状態: まだセットアップされていません。"
-                "配布されたセットアップ（setup）を一度実行してください。"
+                "このPC: まだセットアップされていません。"
+                "配布されたセットアップを一度実行してからお使いください。"
             )
         tk.Label(
             card,
@@ -2356,18 +2349,10 @@ class EverythingSearchApp:
             btn_row, text="更新を確認", command=self.check_for_updates, variant="primary"
         ).pack(side="left", padx=(0, 8))
         self.update_apply_btn = ModernButton(
-            btn_row, text="アップデート", command=self.apply_pending_update
+            btn_row, text="ダウンロードして更新", command=self.apply_pending_update
         )
         self.update_apply_btn.pack(side="left", padx=(0, 8))
         self.update_apply_btn.set_enabled(False)
-        ModernButton(
-            btn_row,
-            text="GitHubを開く",
-            command=lambda: webbrowser.open(
-                f"https://github.com/{GITHUB_REPO}/releases"
-            ),
-            variant="ghost",
-        ).pack(side="left")
 
         tk.Label(
             card,
@@ -2382,7 +2367,7 @@ class EverythingSearchApp:
 
         tk.Label(
             card,
-            text="リリースノート",
+            text="更新内容",
             bg=UI["surface"],
             fg=UI["text_muted"],
             font=FONT_SMALL,
@@ -2422,15 +2407,18 @@ class EverythingSearchApp:
             try:
                 from self_update import fetch_latest_release, version_is_newer
 
-                tok = str(self.settings.get("github_token") or "")
-                info = fetch_latest_release(token=tok)
+                # 利用者は配布元を意識しない。公開のダウンロード先を参照（トークン不要）
+                info = fetch_latest_release()
             except Exception as e:
                 err = e
 
             def done():
                 if err:
-                    msg = f"確認できませんでした: {err}"
-                    self.update_remote_ver_var.set("GitHub: （取得失敗）")
+                    msg = (
+                        "いま更新情報を確認できませんでした。\n"
+                        "ネット接続を確認し、しばらくしてからもう一度お試しください。"
+                    )
+                    self.update_remote_ver_var.set("ダウンロード可能な版: （確認できません）")
                     self.update_status_var.set(msg if not silent else "")
                     if not silent:
                         messagebox.showwarning("更新", msg)
@@ -2438,27 +2426,27 @@ class EverythingSearchApp:
                 assert info is not None
                 local = read_version()
                 self.update_remote_ver_var.set(
-                    f"公開版: {info.version}  （{info.name}）"
+                    f"ダウンロード可能な版: {info.version}"
                 )
-                self._set_update_notes(info.body or "（ノートなし）")
+                self._set_update_notes(info.body or "（特に記載なし）")
                 if version_is_newer(info.version, local):
                     self._pending_release = info
                     self.update_apply_btn.set_enabled(True)
                     self.update_status_var.set(
-                        "新しい版があります。「アップデート」を押すとダウンロードします。"
+                        "新しい版があります。「ダウンロードして更新」を押してください。"
                     )
                     if not silent:
                         if messagebox.askyesno(
                             "更新版があります",
-                            f"新しい版 {info.version} があります（現在 {local}）。\n\n"
-                            "アップデートしますか？\n"
-                            "（キャンセルで後で「更新」タブから実行できます）",
+                            f"新しい版 {info.version} があります（いまの版 {local}）。\n\n"
+                            "ダウンロードして更新しますか？\n"
+                            "（あとで「更新」タブからも実行できます）",
                         ):
                             self.apply_pending_update()
                 else:
-                    self.update_status_var.set("最新版を利用中です。" if not silent else "")
+                    self.update_status_var.set("最新の版を使っています。" if not silent else "")
                     if not silent:
-                        messagebox.showinfo("更新", f"最新版です（{local}）。")
+                        messagebox.showinfo("更新", f"最新の版です（{local}）。")
 
             self.root.after(0, done)
 
@@ -2494,21 +2482,28 @@ class EverythingSearchApp:
             try:
                 from self_update import apply_update_and_restart
 
-                tok = str(self.settings.get("github_token") or "")
-                msg = apply_update_and_restart(rel, token=tok)
+                msg = apply_update_and_restart(rel)
             except Exception as e:
                 err = e
 
             def done():
                 if err:
-                    self.update_status_var.set(f"失敗: {err}")
+                    self.update_status_var.set(
+                        "ダウンロードまたは更新の準備に失敗しました。ネット接続を確認してください。"
+                    )
                     self.update_apply_btn.set_enabled(True)
-                    messagebox.showerror("更新", f"アップデートに失敗しました。\n{err}")
+                    messagebox.showerror(
+                        "更新",
+                        "更新できませんでした。\n"
+                        "ネット接続を確認し、もう一度お試しください。",
+                    )
                     return
                 self.update_status_var.set(msg)
                 messagebox.showinfo(
                     "更新",
-                    msg + "\n\nOK を押すとアプリを終了します（差し替え後に再起動します）。",
+                    "ダウンロードが終わりました。\n\n"
+                    "OK を押すとアプリを一度終了し、新しい版に切り替わります。\n"
+                    "いつも使っているショートカットから起動できます。",
                 )
                 self.root.destroy()
 
@@ -2854,7 +2849,6 @@ class EverythingSearchApp:
         self.settings["port"] = port
         self.settings["user"] = self.user_var.get()
         self.settings["password"] = self.password_var.get()
-        self.settings["github_token"] = self.github_token_var.get()
         self.settings["search_folder"] = quote_folder_path(self.folder_var.get())
         # 現在のフォルダも履歴へ
         if self.settings["search_folder"]:

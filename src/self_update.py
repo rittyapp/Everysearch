@@ -261,7 +261,4 @@ def apply_update_and_restart(
         creationflags=creationflags,
         close_fds=True,
     )
-    return (
-        f"更新を準備しました（{release.version}）。\n"
-        "アプリを終了すると差し替えが実行され、同じショートカットで新版が起動します。"
-    )
+    return f"版 {release.version} のダウンロード準備ができました。"
