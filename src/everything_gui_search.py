@@ -1615,7 +1615,8 @@ class EverythingSearchApp:
             ("ポート", self.port_var, False),
             ("ユーザー名（任意）", self.user_var, False),
             ("パスワード（任意）", self.password_var, True),
-            ("GitHubトークン（私有リポ用）", self.github_token_var, True),
+            # 通常は不要（公開 Release）。社内ミラー等が私有のときだけ
+            ("GitHubトークン（通常は空で可）", self.github_token_var, True),
         ]
         for i, (label, var, is_password) in enumerate(fields):
             row = tk.Frame(form, bg=UI["surface"])
@@ -1662,9 +1663,8 @@ class EverythingSearchApp:
             "ヒント:\n"
             "・Everything → ツール → オプション → HTTP サーバー を有効にする\n"
             "・他 PC から使う場合は、ファイアウォールでポートを許可する\n"
-            "・GitHub が私有のとき、更新タブ用に fine-grained / classic の read:packages 不要・"
-            "repo 読み取り可能なトークンを入れる（DPAPI で暗号化保存）\n"
-            "・設定は LocalAppData\\Everysearch\\data\\settings.json（setup 後）"
+            "・アプリの更新は「更新」タブから（公開の GitHub Release を参照。通常トークン不要）\n"
+            "・接続設定はこのPCだけに保存されます（他の人の設定とは別）"
         )
         tk.Label(
             card,
@@ -2296,9 +2296,8 @@ class EverythingSearchApp:
         tk.Label(
             card,
             text=(
-                "GitHub Releases に新しい版があるとここから更新できます。"
-                "先に script\\setup.bat でインストール配置しておくと、"
-                "同じデスクトップショートカットのまま差し替えられます。"
+                "新しい版が公開されると、ここから更新できます。"
+                "アップデート後もデスクトップの同じショートカットで起動できます。"
             ),
             bg=UI["surface"],
             fg=UI["text_muted"],
@@ -2309,7 +2308,7 @@ class EverythingSearchApp:
         ).pack(fill="x", pady=(0, 12))
 
         self.update_local_ver_var = tk.StringVar(value=f"このPCの版: {read_version()}")
-        self.update_remote_ver_var = tk.StringVar(value="GitHub: （未確認）")
+        self.update_remote_ver_var = tk.StringVar(value="公開版: （未確認）")
         self.update_status_var = tk.StringVar(value="")
         self.update_notes_var = tk.StringVar(value="")
         self._pending_release = None
@@ -2332,11 +2331,14 @@ class EverythingSearchApp:
         ).pack(fill="x", pady=(4, 0))
 
         inst = detect_install_root()
-        layout = (
-            f"配置: {inst}"
-            if inst
-            else f"配置: 未setup（推奨 {local_app_install_root()} ）— setup.bat を実行してください"
-        )
+        if inst is not None:
+            # フルパスは開発者向けに見せすぎない（各ユーザーの AppData になるのは正常）
+            layout = "インストール状態: このPC用にセットアップ済み"
+        else:
+            layout = (
+                "インストール状態: まだセットアップされていません。"
+                "配布されたセットアップ（setup）を一度実行してください。"
+            )
         tk.Label(
             card,
             text=layout,
@@ -2436,7 +2438,7 @@ class EverythingSearchApp:
                 assert info is not None
                 local = read_version()
                 self.update_remote_ver_var.set(
-                    f"GitHub: {info.version}  （{info.name}）"
+                    f"公開版: {info.version}  （{info.name}）"
                 )
                 self._set_update_notes(info.body or "（ノートなし）")
                 if version_is_newer(info.version, local):
@@ -2476,10 +2478,9 @@ class EverythingSearchApp:
         if detect_install_root() is None:
             if not messagebox.askyesno(
                 "セットアップが必要",
-                "まだ setup 配置になっていないようです。\n\n"
-                f"推奨: script\\setup.bat で\n  {local_app_install_root()}\n"
-                "へ入れてから更新してください。\n\n"
-                "このまま LocalAppData に配置して更新を試みますか？",
+                "このPCにはまだインストール配置がありません。\n\n"
+                "配布されたセットアップを実行してから更新するのが安全です。\n"
+                "このままこのPC用フォルダへ入れて更新を試みますか？",
             ):
                 return
             ensure_install_dirs(local_app_install_root())

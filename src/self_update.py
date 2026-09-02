@@ -79,8 +79,8 @@ def fetch_latest_release(
     except urllib.error.HTTPError as e:
         if e.code == 404:
             raise RuntimeError(
-                "Release が見つかりません（リポジトリが私有の場合は "
-                "接続設定の GitHub トークン、または環境変数 GITHUB_TOKEN が必要です）。"
+                "公開されている更新情報（Release）が見つかりません。"
+                "ネットワーク、または配布元の Release 設定を確認してください。"
             ) from e
         raise
 

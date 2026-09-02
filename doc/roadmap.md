@@ -35,12 +35,14 @@
 
 | # | 項目 | 状態 | 内容 |
 |---|------|------|------|
-| U1 | setup（どの Windows でも） | 実装中 | `script\setup.bat` → LocalAppData に EXE 配置＋ショートカット。Python 不要（配布は EXE） |
-| U2 | 版管理 | 実装中 | `version.txt` / アプリ内表示 |
-| U3 | 「更新」タブ | 実装中 | GitHub Releases を確認。更新あり → アップデート／キャンセル |
-| U4 | 差し替え | 実装中 | staging → previous 退避 → current。同じショートカットで最新 |
-| U5 | 失敗時 | 実装中 | previous で起動可能な状態を残す |
-| U6 | settings 隔離 | 実装中 | `%LocalAppData%\Everysearch\data\settings.json`（更新で消さない） |
+| U1 | setup（どの Windows でも） | **済** | `script\setup.bat` → LocalAppData＋デスクトップ／スタート。Python 不要 |
+| U2 | 版管理 | **済** | `version.txt` / タイトルバー表示 |
+| U3 | 「更新」タブ | **済** | Releases 確認。更新あり → ダイアログでアップデート／キャンセル |
+| U4 | 差し替え | **済** | staging → previous → current。同じショートカット |
+| U5 | 失敗時 | **済（土台）** | `previous\` に直前版を残す |
+| U6 | settings 隔離 | **済** | `%LocalAppData%\Everysearch\data\settings.json` |
+| U7 | Release 公開 | **済** | リポを **public** に変更。利用者はトークン不要で更新確認可 |
+| U8 | 個人パスを UI に出さない | **済** | 「セットアップ済み」表示。開発者用フルパスを出さない |
 
 配置イメージ:
 
