@@ -1639,6 +1639,12 @@ class EverythingSearchApp:
         ).pack(side="left", padx=(0, 8))
         ModernButton(
             btn_row, text="接続テスト", command=self.test_connection
+        ).pack(side="left", padx=(0, 8))
+        ModernButton(
+            btn_row,
+            text="自身に接続",
+            command=self.connect_to_self_and_test,
+            variant="ghost",
         ).pack(side="left")
 
         self.settings_status_var = tk.StringVar(
@@ -1651,11 +1657,14 @@ class EverythingSearchApp:
             fg=UI["text_muted"],
             font=FONT_SMALL,
             anchor="w",
+            wraplength=900,
+            justify="left",
         ).pack(fill="x", pady=(16, 0))
 
         tip = (
             "ヒント:\n"
             "・Everything → ツール → オプション → HTTP サーバー を有効にする\n"
+            "・「自身に接続」でこのPCのIPを入れ、接続テストまで行います\n"
             "・他 PC から使う場合は、ファイアウォールでポートを許可する\n"
             "・アプリの更新は「更新」タブから行えます\n"
             "・接続設定はこのPCだけに保存されます（他の人の設定とは別）"
@@ -2862,7 +2871,55 @@ class EverythingSearchApp:
         self.settings_status_var.set(f"保存しました: {host}:{port}")
         messagebox.showinfo("保存完了", f"接続設定を保存しました。\n{host}:{port}")
 
-    def test_connection(self):
+    @staticmethod
+    def _detect_own_ipv4() -> tuple[str, list[str]]:
+        """
+        このPCの IPv4 を推定。
+        戻り値: (優先して使うIP, 見つかった候補一覧)
+        ループバック以外の LAN IP を優先。無ければ 127.0.0.1。
+        """
+        import socket
+
+        candidates: list[str] = []
+        # 外部へ繋がない UDP で、出ていく NIC のアドレスを知る
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("8.8.8.8", 80))
+                ip = s.getsockname()[0]
+                if ip and not ip.startswith("127."):
+                    candidates.append(ip)
+            finally:
+                s.close()
+        except OSError:
+            pass
+        try:
+            hostname = socket.gethostname()
+            for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+                ip = info[4][0]
+                if ip and ip not in candidates and not ip.startswith("127."):
+                    candidates.append(ip)
+        except OSError:
+            pass
+        if not candidates:
+            return "127.0.0.1", ["127.0.0.1"]
+        return candidates[0], candidates
+
+    def connect_to_self_and_test(self):
+        """ホストにこのPCのIPを入れ、そのまま接続テストする。"""
+        primary, all_ips = self._detect_own_ipv4()
+        self.host_var.set(primary)
+        if not (self.port_var.get() or "").strip():
+            self.port_var.set("8888")
+        self.settings_status_var.set(
+            f"自身のIPを設定: {primary}"
+            + (f"（他候補: {', '.join(all_ips[1:])}）" if len(all_ips) > 1 else "")
+            + " — 接続テスト中…"
+        )
+        self.root.update_idletasks()
+        self.test_connection(extra_note=f"このPCのIP {primary} でテストしました。")
+
+    def test_connection(self, extra_note: str = ""):
         host = self.host_var.get().strip() or "127.0.0.1"
         try:
             port = int(self.port_var.get().strip())
@@ -2882,17 +2939,23 @@ class EverythingSearchApp:
             )
             # 空に近い regex でも応答があれば接続OK
             total = data.get("totalResults", 0)
-            self.settings_status_var.set(f"接続成功: {host}:{port}（応答あり / total={total}）")
-            messagebox.showinfo(
-                "接続成功",
-                f"Everything に接続できました。\n{host}:{port}",
+            self.settings_status_var.set(
+                f"接続成功: {host}:{port}（応答あり / total={total}）"
             )
+            msg = f"Everything に接続できました。\n{host}:{port}"
+            if extra_note:
+                msg += f"\n\n{extra_note}"
+            messagebox.showinfo("接続成功", msg)
         except Exception as e:
             self.settings_status_var.set(f"接続失敗: {host}:{port}")
-            messagebox.showerror(
-                "接続失敗",
-                f"接続できませんでした。\n{host}:{port}\n\n{e}",
+            msg = f"接続できませんでした。\n{host}:{port}\n\n{e}"
+            if extra_note:
+                msg += f"\n\n{extra_note}"
+            msg += (
+                "\n\nEverything の HTTP サーバーが有効か、"
+                "ポート番号が合っているか確認してください。"
             )
+            messagebox.showerror("接続失敗", msg)
 
     # ----- search / sort -----
     def _cancel_live_debounce(self):

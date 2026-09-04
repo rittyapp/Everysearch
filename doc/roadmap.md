@@ -84,6 +84,7 @@ GitHub: `https://github.com/rittyapp/Everysearch` の **Releases** に `Everysea
 | D | フィルタ全OFFで0件 | 仕様確認 | 全OFF＝全表示にするか | 種類チップと同論 |
 | E | EXE 再ビルド | 運用注意 | setup／Release 前に build_exe2 | — |
 | F | フィルタ全ON/OFF トグル | 済 | 「フィルタ」ラベルで切替 | 済（すぐサーチ種類） |
+| G | 接続設定「自身に接続」 | **済** | このPCのIPをホストへ入れ、接続テストまで実行して結果表示 | 接続UIがあれば同様 |
 
 ---
 
