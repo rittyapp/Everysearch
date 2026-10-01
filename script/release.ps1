@@ -56,7 +56,7 @@ try {
     # 4) release + assets
     L "[4/4] release $Tag"
     $NotesFile = Join-Path $ScriptDir "release-notes.md"
-    $Notes = if (Test-Path -LiteralPath $NotesFile) { Get-Content -LiteralPath $NotesFile -Raw -Encoding UTF8 } else { "" }
+    $Notes = if (Test-Path -LiteralPath $NotesFile) { [IO.File]::ReadAllText($NotesFile, [Text.Encoding]::UTF8) } else { "" }
     $rel = $null
     try { $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/tags/$Tag" -Headers $H -Method Get; L "  既存リリースを使用" } catch { }
     if (-not $rel) {
@@ -75,6 +75,7 @@ try {
 }
 catch {
     L "ERROR: $($_.Exception.Message)"
+    try { $r = New-Object IO.StreamReader($_.Exception.Response.GetResponseStream()); L ("  " + $r.ReadToEnd()) } catch { }
     CopyLog
     exit 1
 }
