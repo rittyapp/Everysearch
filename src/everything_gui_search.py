@@ -87,6 +87,8 @@ DEFAULT_SETTINGS = {
     # 初期は空（全体検索）。特定フォルダはユーザーが指定／履歴から選択
     "search_folder": "",
     "folder_history": [],
+    # 接続設定の履歴（host + port）。フォーカス時に選べる
+    "connection_history": [],
     "filters": [],  # 空なら default_filter_definitions() を使う
     # 検索画面チップの明暗（id -> true=明るい/表示側）
     "chip_state": {},
@@ -103,6 +105,7 @@ REFETCH_IF_FILTERED_LE = 100
 # 再取得時の安全上限（これ以上は切る）
 MAX_RESULTS_HARD_CAP = 20000
 FOLDER_HISTORY_MAX = 20
+CONNECTION_HISTORY_MAX = 20
 # 入力ごとのライブ検索（デバウンス ms）
 LIVE_SEARCH_DEBOUNCE_MS = 280
 
@@ -487,6 +490,54 @@ def normalize_folder_history(raw) -> list[str]:
     return result
 
 
+def normalize_connection_history(raw) -> list[dict]:
+    """接続履歴を [{host, port}, ...] に正規化（新しい順・host:port 重複なし）。"""
+    if not isinstance(raw, list):
+        return []
+    seen = set()
+    result = []
+    for item in raw:
+        host = ""
+        port = 8888
+        if isinstance(item, dict):
+            host = str(item.get("host") or "").strip()
+            try:
+                port = int(item.get("port", 8888))
+            except (TypeError, ValueError):
+                port = 8888
+        elif isinstance(item, str):
+            text = item.strip()
+            if not text:
+                continue
+            if text.count(":") == 1:
+                # host:port（IPv4 / ホスト名想定。IPv6 は非対応）
+                left, right = text.rsplit(":", 1)
+                host = left.strip()
+                try:
+                    port = int(right.strip())
+                except ValueError:
+                    host = text
+                    port = 8888
+            else:
+                host = text
+        if not host:
+            continue
+        if not (1 <= port <= 65535):
+            port = 8888
+        key = f"{host.lower()}:{port}"
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({"host": host, "port": port})
+        if len(result) >= CONNECTION_HISTORY_MAX:
+            break
+    return result
+
+
+def format_connection_history_label(item: dict) -> str:
+    return f"{item.get('host', '')}:{item.get('port', 8888)}"
+
+
 def normalize_chip_state(raw, filters: list[dict]) -> dict:
     """チップ明暗を id->bool に正規化。未設定は default_on。"""
     saved = raw if isinstance(raw, dict) else {}
@@ -525,6 +576,7 @@ def load_settings() -> dict:
     _migrate_settings_to_data_dir()
     data = dict(DEFAULT_SETTINGS)
     data["folder_history"] = list(DEFAULT_SETTINGS["folder_history"])
+    data["connection_history"] = list(DEFAULT_SETTINGS["connection_history"])
     data["filters"] = []
     data["chip_state"] = {}
     if SETTINGS_PATH.is_file():
@@ -542,6 +594,9 @@ def load_settings() -> dict:
     # 既定フォルダに引用符が無い場合は付ける
     data["search_folder"] = quote_folder_path(data.get("search_folder", "") or "")
     data["folder_history"] = normalize_folder_history(data.get("folder_history", []))
+    data["connection_history"] = normalize_connection_history(
+        data.get("connection_history", [])
+    )
     data["filters"] = normalize_filter_definitions(data.get("filters"))
     data["chip_state"] = normalize_chip_state(data.get("chip_state"), data["filters"])
     # 現在の対象フォルダが履歴に無ければ先頭へ（空は追加しない）
@@ -554,6 +609,11 @@ def load_settings() -> dict:
         data["port"] = int(data.get("port", 8888))
     except (TypeError, ValueError):
         data["port"] = 8888
+    # 現在の接続先も履歴先頭へ
+    data["connection_history"] = normalize_connection_history(
+        [{"host": str(data.get("host") or "127.0.0.1"), "port": data["port"]}]
+        + data["connection_history"]
+    )
     return data
 
 
@@ -567,6 +627,9 @@ def save_settings(settings: dict) -> None:
         "github_token": encrypt_secret(str(settings.get("github_token", ""))),
         "search_folder": quote_folder_path(settings.get("search_folder", "")),
         "folder_history": normalize_folder_history(settings.get("folder_history", [])),
+        "connection_history": normalize_connection_history(
+            settings.get("connection_history", [])
+        ),
         "filters": filters,
         "chip_state": normalize_chip_state(settings.get("chip_state"), filters),
     }
@@ -1168,6 +1231,7 @@ class EverythingSearchApp:
         self.filter_chip_host = None  # チップを置く Frame
         self.filter_stats = {}
         self.folder_history_open = False
+        self.connection_history_open = False
         # 直前の検索条件（フィルタ後の自動再取得用）
         self._last_regex = ""
         self._last_folder = ""
@@ -1399,10 +1463,10 @@ class EverythingSearchApp:
             actions, text="選択フォルダを開く", command=self.open_selected_folder
         ).pack(side="left", padx=(0, 8))
         ModernButton(
-            actions, text="コピー", command=self.copy_selected_files
+            actions, text="ファイルコピー", command=self.copy_selected_files
         ).pack(side="left", padx=(0, 8))
         ModernButton(
-            actions, text="パスをコピー", command=self.copy_selected_path, variant="ghost"
+            actions, text="パスのコピー", command=self.copy_selected_path, variant="ghost"
         ).pack(side="left")
 
         self.regex_var = tk.StringVar(value="変換後正規表現:  —")
@@ -1590,7 +1654,8 @@ class EverythingSearchApp:
         ).pack(fill="x", pady=(0, 4))
         tk.Label(
             card,
-            text="Everything が別 PC で動いている場合は、そのホスト名または IP を指定してください。",
+            text="Everything が別 PC で動いている場合は、そのホスト名または IP を指定してください。"
+            "ホスト／ポート欄をクリックすると接続履歴から選べます。",
             bg=UI["surface"],
             fg=UI["text_muted"],
             font=FONT_SMALL,
@@ -1607,12 +1672,14 @@ class EverythingSearchApp:
         self.password_var = tk.StringVar(value=str(self.settings.get("password", "")))
 
         fields = [
-            ("ホスト / IP", self.host_var, False),
-            ("ポート", self.port_var, False),
-            ("ユーザー名（任意）", self.user_var, False),
-            ("パスワード（任意）", self.password_var, True),
+            ("ホスト / IP", self.host_var, False, "host"),
+            ("ポート", self.port_var, False, "port"),
+            ("ユーザー名（任意）", self.user_var, False, None),
+            ("パスワード（任意）", self.password_var, True, None),
         ]
-        for i, (label, var, is_password) in enumerate(fields):
+        self.host_entry = None
+        self.port_entry = None
+        for label, var, is_password, hist_key in fields:
             row = tk.Frame(form, bg=UI["surface"])
             row.pack(fill="x", pady=(0, 12))
             tk.Label(
@@ -1631,17 +1698,43 @@ class EverythingSearchApp:
                 show="●" if is_password else "",
             )
             entry.pack(side="left", fill="x", expand=True)
+            if hist_key == "host":
+                self.host_entry = entry
+            elif hist_key == "port":
+                self.port_entry = entry
+            if hist_key:
+                entry.bind("<FocusIn>", self._on_connection_entry_focus)
+                entry.bind("<Button-1>", self._on_connection_entry_click)
+                entry.bind("<Down>", self._on_connection_entry_down)
+                entry.bind("<Escape>", lambda _e: self.hide_connection_history())
 
-        btn_row = tk.Frame(card, bg=UI["surface"])
-        btn_row.pack(fill="x", pady=(8, 0))
+        # 接続履歴（ホスト／ポートフォーカス時に表示）
+        self.connection_history_panel = tk.Frame(
+            card,
+            bg=UI["surface"],
+            highlightbackground=UI["border"],
+            highlightthickness=1,
+        )
+        self.connection_history_list_frame = tk.Frame(
+            self.connection_history_panel, bg=UI["surface"]
+        )
+        self.connection_history_list_frame.pack(
+            fill="both", expand=True, padx=4, pady=4
+        )
+
+        self.settings_btn_row = tk.Frame(card, bg=UI["surface"])
+        self.settings_btn_row.pack(fill="x", pady=(8, 0))
         ModernButton(
-            btn_row, text="設定を保存", command=self.save_connection_settings, variant="primary"
+            self.settings_btn_row,
+            text="設定を保存",
+            command=self.save_connection_settings,
+            variant="primary",
         ).pack(side="left", padx=(0, 8))
         ModernButton(
-            btn_row, text="接続テスト", command=self.test_connection
+            self.settings_btn_row, text="接続テスト", command=self.test_connection
         ).pack(side="left", padx=(0, 8))
         ModernButton(
-            btn_row,
+            self.settings_btn_row,
             text="自身に接続",
             command=self.connect_to_self_and_test,
             variant="ghost",
@@ -1665,6 +1758,7 @@ class EverythingSearchApp:
             "ヒント:\n"
             "・Everything → ツール → オプション → HTTP サーバー を有効にする\n"
             "・「自身に接続」でこのPCのIPを入れ、接続テストまで行います\n"
+            "・ホスト／ポート欄をクリックすると、以前使った接続先を選べます\n"
             "・他 PC から使う場合は、ファイアウォールでポートを許可する\n"
             "・アプリの更新は「更新」タブから行えます\n"
             "・接続設定はこのPCだけに保存されます（他の人の設定とは別）"
@@ -2540,11 +2634,10 @@ class EverythingSearchApp:
             "・例: 「AB010 54」→ AB010-85-054 などにもヒット\n"
             "・例: 「REV757_0200」→ REV757-0200（- と _ は区切り1文字として同一視）\n"
             "・検索欄は入力するだけで候補が更新されます（検索ボタン不要）\n"
-            "・結果を右クリック → エクスプローラー系のメニュー（環境により差あり）\n"
             "・結果の複数選択: Ctrl+クリックで追加、Shift+クリックで範囲\n"
-            "・右クリック → 「コピー（エクスプローラーへ貼り付け）」で複数コピー可\n"
-            "  （エクスプローラーで Ctrl+V で貼り付け）\n"
-            "・下の「コピー」ボタンでも同じ操作ができます\n"
+            "・右クリック → 「ファイルコピー」「パスのコピー」（複数選択対応）\n"
+            "  （ファイルコピー後、エクスプローラーで Ctrl+V で貼り付け）\n"
+            "・下の「ファイルコピー」「パスのコピー」ボタンでも同じ操作ができます\n"
             "\n"
             "【準備（初回のみ）】\n"
             "1. Everything をインストールして起動する（下のリンクから入手）\n"
@@ -2841,6 +2934,188 @@ class EverythingSearchApp:
             # 選び直したらその場で検索し直す
             self._run_live_search()
 
+    # ----- connection history -----
+    def get_connection_history(self) -> list[dict]:
+        return normalize_connection_history(self.settings.get("connection_history", []))
+
+    def set_connection_history(self, history: list, persist: bool = True):
+        self.settings["connection_history"] = normalize_connection_history(history)
+        if persist:
+            try:
+                save_settings(self.settings)
+            except OSError:
+                pass
+
+    def add_connection_to_history(self, host: str, port: int, persist: bool = True):
+        """使った接続先を履歴の先頭へ。"""
+        host = (host or "").strip() or "127.0.0.1"
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            port = 8888
+        if not (1 <= port <= 65535):
+            port = 8888
+        entry = {"host": host, "port": port}
+        key = f"{host.lower()}:{port}"
+        history = [entry] + [
+            h
+            for h in self.get_connection_history()
+            if f"{str(h.get('host', '')).lower()}:{h.get('port')}" != key
+        ]
+        self.set_connection_history(history, persist=persist)
+        if self.connection_history_open:
+            self._rebuild_connection_history_list()
+
+    def _on_connection_entry_focus(self, _event=None):
+        self.root.after(50, self.show_connection_history)
+
+    def _on_connection_entry_click(self, _event=None):
+        self.root.after(10, self.show_connection_history)
+
+    def _on_connection_entry_down(self, _event=None):
+        self.show_connection_history()
+        return "break"
+
+    def show_connection_history(self):
+        if self.connection_history_open:
+            self._rebuild_connection_history_list()
+            return
+        self.connection_history_open = True
+        # ボタン行の直前（フォーム直後）に差し込む
+        self.connection_history_panel.pack(
+            fill="x", pady=(0, 8), before=self.settings_btn_row
+        )
+        self._rebuild_connection_history_list()
+
+    def hide_connection_history(self):
+        if not self.connection_history_open:
+            return
+        self.connection_history_open = False
+        self.connection_history_panel.pack_forget()
+
+    def _rebuild_connection_history_list(self):
+        for child in self.connection_history_list_frame.winfo_children():
+            child.destroy()
+
+        history = self.get_connection_history()
+        if not history:
+            tk.Label(
+                self.connection_history_list_frame,
+                text="履歴はまだありません（保存や接続テストで追加されます）",
+                bg=UI["surface"],
+                fg=UI["text_muted"],
+                font=FONT_SMALL,
+                anchor="w",
+            ).pack(fill="x", padx=6, pady=6)
+            return
+
+        canvas = tk.Canvas(
+            self.connection_history_list_frame,
+            bg=UI["surface"],
+            highlightthickness=0,
+            height=min(180, 36 * min(len(history), 5) + 8),
+        )
+        scrollbar = ttk.Scrollbar(
+            self.connection_history_list_frame,
+            orient="vertical",
+            command=canvas.yview,
+            style="Modern.Vertical.TScrollbar",
+        )
+        inner = tk.Frame(canvas, bg=UI["surface"])
+        inner.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        if len(history) > 5:
+            scrollbar.pack(side="right", fill="y")
+
+        def _on_canvas_configure(event, wid=window_id):
+            canvas.itemconfigure(wid, width=event.width)
+
+        canvas.bind("<Configure>", _on_canvas_configure)
+
+        for item in history:
+            label = format_connection_history_label(item)
+            row = tk.Frame(inner, bg=UI["surface"])
+            row.pack(fill="x", pady=1)
+
+            path_btn = tk.Label(
+                row,
+                text=label,
+                bg=UI["surface"],
+                fg=UI["text"],
+                font=FONT_SMALL,
+                anchor="w",
+                cursor="hand2",
+                padx=8,
+                pady=6,
+            )
+            path_btn.pack(side="left", fill="x", expand=True)
+
+            del_btn = tk.Label(
+                row,
+                text=" × ",
+                bg=UI["surface"],
+                fg="#B91C1C",
+                font=FONT_UI_BOLD,
+                cursor="hand2",
+                padx=6,
+                pady=4,
+            )
+            del_btn.pack(side="right")
+
+            def _hover_in(e, w=path_btn, r=row, d=del_btn):
+                w.configure(bg=UI["accent_line"])
+                r.configure(bg=UI["accent_line"])
+                d.configure(bg=UI["accent_line"])
+
+            def _hover_out(e, w=path_btn, r=row, d=del_btn):
+                w.configure(bg=UI["surface"])
+                r.configure(bg=UI["surface"])
+                d.configure(bg=UI["surface"])
+
+            def _select(e, it=item):
+                self.select_connection_history(it)
+
+            def _delete(e, it=item):
+                self.delete_connection_history(it)
+                return "break"
+
+            for w in (path_btn, row):
+                w.bind("<Enter>", _hover_in)
+                w.bind("<Leave>", _hover_out)
+                w.bind("<Button-1>", _select)
+            del_btn.bind("<Enter>", _hover_in)
+            del_btn.bind("<Leave>", _hover_out)
+            del_btn.bind("<Button-1>", _delete)
+
+    def select_connection_history(self, item: dict):
+        host = str(item.get("host") or "127.0.0.1")
+        try:
+            port = int(item.get("port", 8888))
+        except (TypeError, ValueError):
+            port = 8888
+        self.host_var.set(host)
+        self.port_var.set(str(port))
+        self.add_connection_to_history(host, port)
+        self.hide_connection_history()
+        if self.host_entry is not None:
+            self.host_entry.focus_set()
+        self.settings_status_var.set(f"履歴から選択: {host}:{port}")
+
+    def delete_connection_history(self, item: dict):
+        key = f"{str(item.get('host', '')).lower()}:{item.get('port')}"
+        history = [
+            h
+            for h in self.get_connection_history()
+            if f"{str(h.get('host', '')).lower()}:{h.get('port')}" != key
+        ]
+        self.set_connection_history(history)
+        self._rebuild_connection_history_list()
+
     # ----- settings actions -----
     def save_connection_settings(self):
         host = self.host_var.get().strip() or "127.0.0.1"
@@ -2861,6 +3136,8 @@ class EverythingSearchApp:
         # 現在のフォルダも履歴へ
         if self.settings["search_folder"]:
             self.add_folder_to_history(self.settings["search_folder"], persist=False)
+        self.add_connection_to_history(host, port, persist=False)
+        self.hide_connection_history()
 
         try:
             save_settings(self.settings)
@@ -2939,6 +3216,7 @@ class EverythingSearchApp:
             )
             # 空に近い regex でも応答があれば接続OK
             total = data.get("totalResults", 0)
+            self.add_connection_to_history(host, port)
             self.settings_status_var.set(
                 f"接続成功: {host}:{port}（応答あり / total={total}）"
             )
@@ -3569,12 +3847,57 @@ class EverythingSearchApp:
             return None
         return row["fullpath"]
 
+    @staticmethod
+    def _nearest_existing_folder(path: str) -> str | None:
+        """path の親をさかのぼり、実在する最も近いフォルダを返す（なければ None）。"""
+        cur = os.path.dirname(os.path.normpath(path or ""))
+        while cur:
+            try:
+                if os.path.isdir(cur):
+                    return cur
+            except OSError:
+                pass
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                break
+            cur = parent
+        return None
+
+    def _open_stale_fallback(self, path: str, what: str):
+        """
+        索引にはあるが実体が見つからない場合の案内。
+        接続先 PC の Everything がネットワーク共有を索引していると、
+        改名・移動・削除が反映されず古い名前が残ることがある。
+        """
+        folder = self._nearest_existing_folder(path)
+        msg = (
+            f"{what}が見つかりませんでした。\n"
+            "索引が古い可能性があります（改名・移動・削除された可能性）。\n\n"
+            f"{path}"
+        )
+        if folder:
+            messagebox.showwarning(
+                "見つかりません", msg + f"\n\n親フォルダを開きます:\n{folder}"
+            )
+            try:
+                os.startfile(folder)
+            except Exception as e:
+                messagebox.showerror(
+                    "フォルダオープン失敗", f"フォルダを開けませんでした。\n{e}"
+                )
+        else:
+            messagebox.showwarning(
+                "見つかりません", msg + "\n\n親フォルダも見つかりませんでした。"
+            )
+
     def open_selected(self, _event=None):
         path = self.get_selected_path()
         if not path:
             return
         try:
             os.startfile(path)
+        except FileNotFoundError:
+            self._open_stale_fallback(path, "ファイル")
         except Exception as e:
             messagebox.showerror("オープン失敗", f"ファイルを開けませんでした。\n{e}")
 
@@ -3583,9 +3906,11 @@ class EverythingSearchApp:
         if not row:
             return
         path = row["fullpath"]
+        folder = path if row["type"] == "folder" else os.path.dirname(path)
         try:
-            folder = path if row["type"] == "folder" else os.path.dirname(path)
             os.startfile(folder)
+        except FileNotFoundError:
+            self._open_stale_fallback(folder, "フォルダ")
         except Exception as e:
             messagebox.showerror(
                 "フォルダオープン失敗", f"フォルダを開けませんでした。\n{e}"
@@ -3607,7 +3932,7 @@ class EverythingSearchApp:
 
     def copy_selected_files(self):
         """
-        選択ファイル/フォルダをクリップボードへ。
+        選択ファイル/フォルダをクリップボードへ（複数選択対応）。
         エクスプローラーで Ctrl+V（貼り付け）するとコピーされる。
         """
         paths = self._get_selected_paths()
@@ -3616,11 +3941,18 @@ class EverythingSearchApp:
             return
         try:
             n = copy_files_to_clipboard(paths)
-            self.info_var.set(
-                f"{n} 件をコピーしました（エクスプローラーで貼り付けできます）"
-            )
+            if n == 1:
+                self.info_var.set(
+                    "ファイルをコピーしました（エクスプローラーで貼り付けできます）"
+                )
+            else:
+                self.info_var.set(
+                    f"{n} 件をファイルコピーしました（エクスプローラーで貼り付けできます）"
+                )
         except Exception as e:
-            messagebox.showerror("コピー失敗", f"ファイルをコピーできませんでした。\n{e}")
+            messagebox.showerror(
+                "ファイルコピー失敗", f"ファイルをコピーできませんでした。\n{e}"
+            )
 
     def _get_selected_paths(self) -> list[str]:
         """現在選択中の行のフルパス一覧。"""
@@ -3703,17 +4035,17 @@ class EverythingSearchApp:
         self._show_selection_context_menu(event, paths)
 
     def _show_selection_context_menu(self, event, paths: list[str]):
-        """右クリックメニュー（複数選択対応・ファイルコピー付き）。"""
+        """右クリックメニュー（複数選択対応・ファイルコピー／パスのコピー）。"""
         if not paths:
             return
         n = len(paths)
         menu = tk.Menu(self.root, tearoff=0, font=FONT_UI)
         menu.add_command(
-            label="コピー（エクスプローラーへ貼り付け）",
+            label="ファイルコピー" if n == 1 else f"ファイルコピー（{n} 件）",
             command=self.copy_selected_files,
         )
         menu.add_command(
-            label="パスをコピー" if n == 1 else f"パスをコピー（{n} 件）",
+            label="パスのコピー" if n == 1 else f"パスのコピー（{n} 件）",
             command=self.copy_selected_path,
         )
         menu.add_separator()

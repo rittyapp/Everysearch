@@ -8,7 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.2"
 GITHUB_REPO = "rittyapp/Everysearch"
 INSTALL_DIR_NAME = "Everysearch"
 
